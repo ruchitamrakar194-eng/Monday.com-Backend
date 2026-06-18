@@ -14,6 +14,8 @@ const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:3000',
   'https://project-management-system-software.netlify.app',
+  'https://dsp-project-management.com',
+  'http://dsp-project-management.com',
 ];
 
 app.use(cors({

@@ -59,7 +59,16 @@ router.patch('/:id', async (req, res) => {
         const record = await Payroll.findByPk(req.params.id);
         if (!record) return res.status(404).json({ error: 'Record not found' });
 
-        await record.update(req.body);
+        const updates = { ...req.body };
+        if (updates.paymentStatus === 'Paid') {
+            if (updates.paymentDate === undefined || updates.paymentDate === null) {
+                updates.paymentDate = new Date();
+            }
+        } else if (updates.paymentStatus === 'Pending' || updates.paymentStatus === 'Approved') {
+            updates.paymentDate = null;
+        }
+
+        await record.update(updates);
         res.json(record);
     } catch (err) {
         res.status(400).json({ error: err.message });

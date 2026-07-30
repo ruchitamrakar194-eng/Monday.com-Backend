@@ -87,7 +87,6 @@ router.post('/', [auth, checkBoardAccess], async (req, res) => {
           if (Array.isArray(pList) && pList.length > 0) {
             const first = pList[0];
             const candidateId = String(typeof first === 'object' ? first.id : first);
-            // Only use if it looks like a real numeric user ID (not a long team ID or unknown string)
             if (candidateId && candidateId.length <= 10 && !isNaN(parseInt(candidateId))) {
               finalAssignedToId = candidateId;
             }
@@ -95,17 +94,100 @@ router.post('/', [auth, checkBoardAccess], async (req, res) => {
         } catch (e) { }
       } else if (updates.person) {
         const personId = String(updates.person);
-        // Only use if it's a valid numeric ID
         if (personId && personId.length <= 10 && !isNaN(parseInt(personId))) {
           finalAssignedToId = personId;
         }
       }
     }
 
+    // Robust Board-Scoped GroupId Resolution
+    let validGroupId = null;
+    let rawGroupId = updates.GroupId || updates.groupId;
+    let targetBoardId = req.body.BoardId || req.body.boardId;
+
+    // 1. Check if rawGroupId is a valid numeric ID in DB
+    if (rawGroupId && !isNaN(parseInt(rawGroupId))) {
+      const existingGroup = await Group.findByPk(parseInt(rawGroupId));
+      if (existingGroup) {
+        validGroupId = existingGroup.id;
+      }
+    }
+
+    // 2. If not numeric or not found by PK, try to find group by title
+    if (!validGroupId && rawGroupId) {
+      const groupTitle = String(rawGroupId).trim();
+      let whereCond = { title: groupTitle };
+      if (targetBoardId && !isNaN(parseInt(targetBoardId))) {
+        whereCond.BoardId = parseInt(targetBoardId);
+      }
+      const foundGroup = await Group.findOne({ where: whereCond });
+      if (foundGroup) {
+        validGroupId = foundGroup.id;
+      } else {
+        const foundAnyTitle = await Group.findOne({ where: { title: groupTitle } });
+        if (foundAnyTitle) validGroupId = foundAnyTitle.id;
+      }
+    }
+
+    // 3. If targetBoardId is provided, find or create group for that specific board
+    if (!validGroupId && targetBoardId) {
+      let bId = targetBoardId;
+      if (isNaN(parseInt(bId))) {
+        const boardObj = await Board.findOne({ where: { [Op.or]: [{ name: bId }, { type: bId }] } });
+        if (boardObj) bId = boardObj.id;
+      }
+      if (!isNaN(parseInt(bId))) {
+        const boardGroup = await Group.findOne({ where: { BoardId: parseInt(bId) } });
+        if (boardGroup) {
+          validGroupId = boardGroup.id;
+        } else {
+          const newGroup = await Group.create({ BoardId: parseInt(bId), title: 'General', color: '#579bfc' });
+          validGroupId = newGroup.id;
+        }
+      }
+    }
+
+    // 4. Final Fallback: use first group from database
+    if (!validGroupId) {
+      const firstGroup = await Group.findOne();
+      if (firstGroup) {
+        validGroupId = firstGroup.id;
+      }
+    }
+
+    updates.GroupId = validGroupId;
+    delete updates.groupId;
+
+    if (!updates.name || String(updates.name).trim() === '') {
+      updates.name = 'Imported Item';
+    }
+
+    // Sanitize numeric fields (dealValue, payment, progress)
+    if (updates.dealValue !== undefined && updates.dealValue !== null) {
+      if (typeof updates.dealValue === 'string') {
+        const clean = updates.dealValue.replace(/[^0-9.-]+/g, '');
+        const num = parseFloat(clean);
+        updates.dealValue = !isNaN(num) ? num : null;
+      }
+    }
+    if (updates.payment !== undefined && updates.payment !== null) {
+      if (typeof updates.payment === 'string') {
+        const clean = updates.payment.replace(/[^0-9.-]+/g, '');
+        const num = parseFloat(clean);
+        updates.payment = !isNaN(num) ? num : 0;
+      }
+    }
+    if (updates.progress !== undefined && updates.progress !== null) {
+      if (typeof updates.progress === 'string') {
+        const clean = updates.progress.replace(/[^0-9]+/g, '');
+        const num = parseInt(clean);
+        updates.progress = !isNaN(num) ? num : 0;
+      }
+    }
+
     const itemData = {
       ...updates,
       customFields: Object.keys(customFields).length > 0 ? customFields : null,
-      // Only fall back to the creator's ID if no person-related field was provided (i.e., not a CSV import)
       assignedToId: finalAssignedToId || (hasPersonField ? null : req.user.id),
       receivedDate: updates.receivedDate || new Date().toISOString(),
       status: updates.status || 'Working on it'
@@ -128,8 +210,8 @@ router.post('/', [auth, checkBoardAccess], async (req, res) => {
 
     res.json(item);
   } catch (err) {
-    console.error(err);
-    res.status(500).send('Server error');
+    console.error('[POST ITEM ERROR]:', err);
+    res.status(500).json({ msg: 'Server error creating item', error: err.message });
   }
 });
 

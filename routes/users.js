@@ -6,38 +6,54 @@ const checkPermission = require('../middleware/checkPermission');
 const { User } = require('../models');
 const multer = require('multer');
 const path = require('path');
-const cloudinary = require('cloudinary').v2;
+const fs = require('fs');
 
-// Configure Cloudinary v2
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-});
+const uploadsBase = fs.existsSync('/var/www/uploads') ? '/var/www/uploads' : path.join(__dirname, '../uploads');
+const imagesDir = path.join(uploadsBase, 'images');
+if (!fs.existsSync(imagesDir)) {
+  fs.mkdirSync(imagesDir, { recursive: true });
+}
 
-// Use memory storage — no temp files on disk, works on all cloud hosts
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 2 * 1024 * 1024 }, // 2MB
-  fileFilter: (req, file, cb) => {
-    const filetypes = /jpeg|jpg|png|gif|webp/;
-    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = filetypes.test(file.mimetype);
-    if (mimetype && extname) return cb(null, true);
-    cb(new Error('Images only!'));
+// Helper to delete old avatar image from disk if it exists
+const deleteOldAvatar = (avatarPath) => {
+  if (avatarPath && avatarPath.startsWith('/uploads/')) {
+    const relativeSubPath = avatarPath.replace(/^\/uploads\//, '');
+    const fullPath = path.join(uploadsBase, relativeSubPath);
+    if (fs.existsSync(fullPath)) {
+      try {
+        fs.unlinkSync(fullPath);
+        console.log(`[AVATAR DELETE] Removed old image: ${fullPath}`);
+      } catch (err) {
+        console.warn('[AVATAR DELETE WARN]', err.message);
+      }
+    }
+  }
+};
+
+// Multer diskStorage for user avatars / images
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, imagesDir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const baseName = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const filename = `${Date.now()}-${baseName}${ext}`;
+    cb(null, filename);
   }
 });
 
-// Helper: upload buffer to Cloudinary via upload_stream (v2 compatible)
-const uploadToCloudinary = (buffer, options = {}) => {
-  return new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(options, (error, result) => {
-      if (error) return reject(error);
-      resolve(result);
-    });
-    stream.end(buffer);
-  });
-};
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    const filetypes = /jpeg|jpg|png|webp/;
+    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = filetypes.test(file.mimetype);
+    if (mimetype && extname) return cb(null, true);
+    cb(new Error('Only image files (jpg, jpeg, png, webp) are allowed!'));
+  }
+});
 
 // @route   GET api/users/me
 // @desc    Get current user (Debug)
@@ -89,20 +105,19 @@ router.get('/', auth, async (req, res) => {
 });
 
 // @route   POST api/users/upload-avatar
-// @desc    Upload avatar to Cloudinary (v2 memoryStorage) and save URL to DB
+// @desc    Upload avatar to local VPS disk storage (uploads/images) and save URL to DB
 router.post('/upload-avatar', auth, upload.single('avatar'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ msg: 'No file uploaded.' });
 
-    // Upload buffer to Cloudinary using upload_stream (cloudinary v2 compatible)
-    const result = await uploadToCloudinary(req.file.buffer, {
-      folder: 'monday-avatars',
-      transformation: [{ width: 256, height: 256, crop: 'fill', gravity: 'face' }],
-    });
+    const user = await User.findByPk(req.user.id);
+    if (user && user.avatar) {
+      deleteOldAvatar(user.avatar);
+    }
 
-    const avatarUrl = result.secure_url;
+    const avatarUrl = `/uploads/images/${req.file.filename}`;
 
-    // Persist Cloudinary URL to the user's DB record immediately
+    // Persist local avatar URL to the user's DB record immediately
     await User.update({ avatar: avatarUrl }, { where: { id: req.user.id } });
 
     res.json({ avatarUrl });
@@ -132,11 +147,16 @@ router.put('/profile', auth, async (req, res) => {
       user.email = email;
     }
 
+    // Delete old avatar image if it's changing
+    if (avatar && avatar !== user.avatar) {
+      deleteOldAvatar(user.avatar);
+      user.avatar = avatar;
+    }
+
     // Only update fields that are provided
     if (name) user.name = name;
     if (phone) user.phone = phone;
     if (address) user.address = address;
-    if (avatar) user.avatar = avatar;
 
     await user.save();
     res.json(user);

@@ -201,7 +201,8 @@ const Payroll = sequelize.define('Payroll', {
   paymentDate: { type: DataTypes.DATE },
   remarks: { type: DataTypes.TEXT },
   month: { type: DataTypes.STRING }, // e.g. "October 2024"
-  year: { type: DataTypes.INTEGER }
+  year: { type: DataTypes.INTEGER },
+  currency: { type: DataTypes.STRING, defaultValue: 'INR' }
 }, {
   tableName: 'payroll'
 });

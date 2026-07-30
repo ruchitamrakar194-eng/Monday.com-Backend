@@ -2,50 +2,56 @@ const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
 const multer = require('multer');
-const cloudinary = require('cloudinary').v2;
+const path = require('path');
+const fs = require('fs');
 const { File, Item, User, Board, Group } = require('../models');
 const { Op } = require('sequelize');
 
-// Configure Cloudinary
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
+// Ensure upload directories exist
+const uploadsBase = fs.existsSync('/var/www/uploads') ? '/var/www/uploads' : path.join(__dirname, '../uploads');
+['images', 'videos', 'files'].forEach(sub => {
+  const dirPath = path.join(uploadsBase, sub);
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
 });
 
-// Validate Cloudinary at startup
-const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
-const apiKey = process.env.CLOUDINARY_API_KEY;
-const apiSecret = process.env.CLOUDINARY_API_SECRET;
+// Configure Multer diskStorage to route files by MIME type
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    let folder = 'files';
+    if (file.mimetype.startsWith('image/')) folder = 'images';
+    else if (file.mimetype.startsWith('video/') || file.mimetype.startsWith('audio/')) folder = 'videos';
+    cb(null, path.join(uploadsBase, folder));
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const baseName = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const filename = `${Date.now()}-${baseName}${ext}`;
+    cb(null, filename);
+  }
+});
 
-if (!cloudName || !apiKey || !apiSecret) {
-  console.error('====================================================');
-  console.error('[CLOUDINARY ERROR] Missing environment variables!');
-  console.error('  CLOUDINARY_CLOUD_NAME:', cloudName ? '✓ SET' : '✗ MISSING');
-  console.error('  CLOUDINARY_API_KEY:   ', apiKey    ? '✓ SET' : '✗ MISSING');
-  console.error('  CLOUDINARY_API_SECRET:', apiSecret ? '✓ SET' : '✗ MISSING');
-  console.error('  --> Add these to Railway Dashboard > Variables');
-  console.error('====================================================');
-} else {
-  console.log('[CLOUDINARY] ✓ Configured — cloud:', cloudName);
-}
-
-// Use memory storage — no temp files on disk
 const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
-});
+  storage: storage,
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedExts = /jpeg|jpg|png|webp|gif|pdf|doc|docx|xls|xlsx|csv|txt|mp4|mov|webm|avi|mkv|zip|rar/;
+    const forbiddenExts = /exe|sh|bat|cmd|com|php|js|vbs|msi|ps1|cgi|jar|py|pl/;
 
-// Helper: upload buffer to Cloudinary via upload_stream
-const uploadToCloudinary = (buffer, options = {}) => {
-  return new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(options, (error, result) => {
-      if (error) return reject(error);
-      resolve(result);
-    });
-    stream.end(buffer);
-  });
-};
+    const ext = path.extname(file.originalname).toLowerCase().replace('.', '');
+
+    if (forbiddenExts.test(ext)) {
+      return cb(new Error('Executable and script files are strictly prohibited!'), false);
+    }
+
+    if (allowedExts.test(ext)) {
+      return cb(null, true);
+    }
+
+    cb(new Error('File type not supported. Allowed: images (jpg, png, webp), documents (pdf, doc, docx, xls, xlsx), videos (mp4, mov, webm).'), false);
+  }
+});
 
 // @route   GET api/files
 // @desc    Get all files (Filtered by role and assignment)
@@ -102,37 +108,24 @@ router.get('/', auth, async (req, res) => {
 });
 
 // @route   POST api/files/upload
-// @desc    Upload a file to Cloudinary and save URL to DB
+// @desc    Upload a file to local VPS disk storage and save URL to DB
 router.post('/upload', auth, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ msg: 'No file uploaded' });
     }
 
-    console.log(`[UPLOAD] ${req.file.originalname} (${req.file.mimetype}, ${req.file.size}B)`);
+    console.log(`[UPLOAD] ${req.file.originalname} (${req.file.mimetype}, ${req.file.size}B) saved to ${req.file.path}`);
 
-    // Determine resource type
-    let resourceType = 'raw';
-    if (req.file.mimetype.startsWith('image/')) resourceType = 'image';
-    else if (req.file.mimetype.startsWith('video/') || req.file.mimetype.startsWith('audio/')) resourceType = 'video';
+    let subfolder = 'files';
+    if (req.file.mimetype.startsWith('image/')) subfolder = 'images';
+    else if (req.file.mimetype.startsWith('video/') || req.file.mimetype.startsWith('audio/')) subfolder = 'videos';
 
-    // Strip extension from public_id — Cloudinary adds extension automatically
-    const baseName = req.file.originalname.replace(/\.[^/.]+$/, '');
-    const safeBase = baseName.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const publicId = `monday-files/${Date.now()}-${safeBase}`;
-
-    // Upload to Cloudinary
-    const result = await uploadToCloudinary(req.file.buffer, {
-      resource_type: resourceType,
-      public_id: publicId,
-    });
-
-    console.log(`[UPLOAD] Cloudinary OK — URL: ${result.secure_url}`);
+    const fileUrl = `/uploads/${subfolder}/${req.file.filename}`;
 
     const newFile = await File.create({
       name: req.file.originalname,
-      url: result.secure_url,
-      cloudinaryId: result.public_id,
+      url: fileUrl,
       size: req.file.size,
       type: req.file.mimetype,
       uploadedBy: req.user.name,
@@ -159,18 +152,17 @@ router.delete('/:id', auth, async (req, res) => {
     const file = await File.findByPk(req.params.id);
     if (!file) return res.status(404).json({ msg: 'File not found' });
 
-    // Delete from Cloudinary if cloudinaryId exists
-    if (file.cloudinaryId) {
-      try {
-        // Determine resource type from mime type
-        let resourceType = 'raw';
-        if (file.type && file.type.startsWith('image/')) resourceType = 'image';
-        else if (file.type && (file.type.startsWith('video/') || file.type.startsWith('audio/'))) resourceType = 'video';
-
-        await cloudinary.uploader.destroy(file.cloudinaryId, { resource_type: resourceType });
-        console.log(`[FILE DELETE] Deleted from Cloudinary: ${file.cloudinaryId}`);
-      } catch (cloudErr) {
-        console.warn('[FILE DELETE] Cloudinary deletion failed (continuing):', cloudErr.message);
+    // Delete local file if it exists under /uploads/
+    if (file.url && file.url.startsWith('/uploads/')) {
+      const relativeSubPath = file.url.replace(/^\/uploads\//, '');
+      const fullPath = path.join(uploadsBase, relativeSubPath);
+      if (fs.existsSync(fullPath)) {
+        try {
+          fs.unlinkSync(fullPath);
+          console.log(`[FILE DELETE] Deleted local file: ${fullPath}`);
+        } catch (unlinkErr) {
+          console.warn('[FILE DELETE] Could not delete local file:', unlinkErr.message);
+        }
       }
     }
 
@@ -183,3 +175,4 @@ router.delete('/:id', auth, async (req, res) => {
 });
 
 module.exports = router;
+

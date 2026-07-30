@@ -11,9 +11,17 @@ router.get('/future', auth, aiController.getFutureProjects);
 // @desc    Get dynamic AI R&D Roadmap board
 router.get('/roadmap', auth, aiController.getRoadmap);
 
-// @route   GET api/ai-projects/commercial-sira
-// @desc    Get dynamic Commercial SIRA board
-router.get('/commercial-sira', auth, aiController.getCommercialSIRA);
+// @route   GET api/ai-projects/commercial-confirmed-multistage
+router.get('/commercial-confirmed-multistage', auth, aiController.getCommercialConfirmedMultistage);
+
+// @route   GET api/ai-projects/commercial-confirmed-sira
+router.get('/commercial-confirmed-sira', auth, aiController.getCommercialConfirmedSIRA);
+
+// @route   GET api/ai-projects/commercial-inquiry-multistage
+router.get('/commercial-inquiry-multistage', auth, aiController.getCommercialInquiryMultistage);
+
+// @route   GET api/ai-projects/commercial-inquiry-sira
+router.get('/commercial-inquiry-sira', auth, aiController.getCommercialInquirySIRA);
 
 // @route   GET api/ai-projects/dm-inquiries
 // @desc    Get dynamic DM Inquiries board

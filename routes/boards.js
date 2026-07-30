@@ -229,10 +229,20 @@ router.post('/', [auth, checkPermission('createMainBoards')], async (req, res) =
 // @route   POST api/boards/:id/groups
 router.post('/:id/groups', [auth, checkBoardAccess], async (req, res) => {
   try {
-    const group = await Group.create({ ...req.body, BoardId: req.params.id });
+    let boardId = req.params.id;
+    if (isNaN(parseInt(boardId))) {
+      const b = await Board.findOne({ where: { [Op.or]: [{ type: boardId }, { name: boardId }] } });
+      if (b) boardId = b.id;
+      else {
+        const firstB = await Board.findOne();
+        if (firstB) boardId = firstB.id;
+      }
+    }
+    const group = await Group.create({ ...req.body, BoardId: boardId });
     res.json(group);
   } catch (err) {
-    res.status(500).send('Server error');
+    console.error('[CREATE GROUP ERROR]:', err);
+    res.status(500).json({ msg: 'Server error creating group', error: err.message });
   }
 });
 

@@ -4,6 +4,8 @@ dotenv.config();
 
 const express = require('express');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 const { sequelize } = require('./models');
 const { DataTypes, Op } = require('sequelize');
 
@@ -32,8 +34,10 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token'],
   credentials: true
 }));
-app.use(express.json());
-app.use('/uploads', express.static('uploads'));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+const staticUploadsPath = fs.existsSync('/var/www/uploads') ? '/var/www/uploads' : path.join(__dirname, 'uploads');
+app.use('/uploads', express.static(staticUploadsPath));
 
 // Health check route
 app.get('/', (req, res) => {
@@ -174,6 +178,10 @@ sequelize.authenticate()
         if (!payrollCols.includes('festivalbonus')) {
           console.log('Adding missing column: festivalBonus to payroll');
           await queryInterface.addColumn('payroll', 'festivalBonus', { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 });
+        }
+        if (!payrollCols.includes('currency')) {
+          console.log('Adding missing column: currency to payroll');
+          await queryInterface.addColumn('payroll', 'currency', { type: DataTypes.STRING, defaultValue: 'INR' });
         }
       } catch (err) { }
 
